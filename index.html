@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ParqueoPlaca · Control de Ingreso y Salida</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@500;600;700&display=swap" rel="stylesheet">
@@ -106,24 +105,6 @@
   }
   .panel .sub{color:var(--muted);font-size:13px;margin:0 0 18px;}
 
-  .cam-box{
-    position:relative;border-radius:10px;overflow:hidden;background:#000;
-    border:1px solid var(--line);aspect-ratio:4/3;
-  }
-  .cam-box video, .cam-box canvas{width:100%;height:100%;object-fit:cover;display:block;}
-  .cam-guide{
-    position:absolute;left:4%;right:4%;top:28%;height:44%;
-    border:3px dashed var(--yellow);border-radius:8px;pointer-events:none;
-    box-shadow:0 0 0 2000px rgba(0,0,0,.35);
-  }
-  .cam-guide::after{
-    content:'Encuadra la placa aquí';position:absolute;bottom:-24px;left:0;
-    font-size:11px;color:var(--yellow);font-family:var(--mono);
-  }
-  .cam-off{
-    display:flex;align-items:center;justify-content:center;height:100%;
-    color:var(--muted);font-size:13px;text-align:center;padding:20px;
-  }
 
   .btn{
     appearance:none;border:none;cursor:pointer;font-family:var(--body);
@@ -272,37 +253,20 @@
   <section id="view-entrada">
     <div class="grid">
       <div class="panel">
-        <h2>Lectura de placa · Ingreso</h2>
-        <p class="sub">Encuadra la placa dentro del recuadro amarillo y captura. Motos: 3 letras + 2 números + 1 letra. Carros: 3 letras + 3 números.</p>
+        <h2>Registro de ingreso</h2>
+        <p class="sub">Escribe la placa del vehículo. Motos: 3 letras + 2 números + 1 letra. Carros: 3 letras + 3 números.</p>
 
-        <div class="cam-box" id="camBoxEntrada">
-          <div class="cam-off" id="camOffEntrada">
-            Cámara no iniciada.<br><button class="btn btn-yellow" style="margin-top:10px" id="btnStartCamEntrada">Activar cámara</button>
-          </div>
-          <video id="videoEntrada" autoplay playsinline muted style="display:none"></video>
-          <div class="cam-guide" id="guideEntrada" style="display:none"></div>
+        <div class="plate-read" id="plateReadBox">
+          <input type="text" id="plateReadInput" maxlength="8" value="" placeholder="ABC12D" autofocus>
         </div>
-        <canvas id="canvasEntrada" class="hidden"></canvas>
-
-        <div class="row">
-          <button class="btn btn-yellow" id="btnCapture" disabled>📷 Capturar y leer placa</button>
-          <label class="btn btn-ghost" style="display:inline-flex;align-items:center;cursor:pointer;">
-            Subir foto de placa
-            <input type="file" id="fileUpload" accept="image/*" capture="environment" style="display:none">
-          </label>
-        </div>
-        <div class="status-line" id="statusEntrada">Esperando captura…</div>
-
-        <div class="plate-read hidden" id="plateReadBox">
-          <input type="text" id="plateReadInput" maxlength="8" value="">
-        </div>
-        <div class="type-toggle hidden" id="typeToggle">
+        <div class="type-toggle" id="typeToggle">
           <div class="type-opt" data-type="moto">🏍 MOTO (LLL·NN·L)</div>
           <div class="type-opt" data-type="carro">🚗 CARRO (LLL·NNN)</div>
         </div>
-        <div class="row hidden" id="confirmRow">
+        <div class="status-line" id="statusEntrada">Escribe la placa y selecciona el tipo de vehículo.</div>
+        <div class="row" id="confirmRow">
           <button class="btn btn-green" id="btnConfirmEntry">✔ Generar ticket e imprimir</button>
-          <button class="btn btn-ghost" id="btnRetryEntry">Reintentar lectura</button>
+          <button class="btn btn-ghost" id="btnRetryEntry">Limpiar</button>
         </div>
       </div>
 
@@ -498,199 +462,42 @@ function normalizeAndDetect(rawText){
 }
 
 /* =========================================================================
-   ENTRADA · CÁMARA + OCR (Tesseract.js)
+   ENTRADA · CAPTURA MANUAL DE PLACA
    ========================================================================= */
-let entradaStream = null;
-let tesseractWorker = null;
 let selectedType = null;
 
-async function getWorker(){
-  if(tesseractWorker) return tesseractWorker;
-  tesseractWorker = await Tesseract.createWorker('eng');
-  await tesseractWorker.setParameters({
-    tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
-    tessedit_pageseg_mode: '7',   // línea única de texto, ideal para una placa ya recortada
-    tessedit_ocr_engine_mode: '1' // solo motor LSTM: más rápido y más preciso que el modo combinado por defecto
-  });
-  return tesseractWorker;
-}
-
-document.getElementById('btnStartCamEntrada').addEventListener('click', async ()=>{
-  try{
-    entradaStream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:'environment', width:{ideal:1280}, height:{ideal:960} } });
-    const video = document.getElementById('videoEntrada');
-    video.srcObject = entradaStream;
-    video.style.display='block';
-    document.getElementById('camOffEntrada').style.display='none';
-    document.getElementById('guideEntrada').style.display='block';
-    document.getElementById('btnCapture').disabled = false;
-    document.getElementById('statusEntrada').textContent = 'Cámara activa. Encuadra la placa y captura.';
-  }catch(err){
-    document.getElementById('statusEntrada').textContent = 'No se pudo acceder a la cámara (' + err.message + '). Usa "Subir foto" como alternativa.';
-    document.getElementById('statusEntrada').className = 'status-line err';
+const plateReadInput = document.getElementById('plateReadInput');
+plateReadInput.addEventListener('input', ()=>{
+  const value = plateReadInput.value.toUpperCase().replace(/[^A-Z0-9]/g,'');
+  plateReadInput.value = value;
+  const guess = normalizeAndDetect(value);
+  if(guess.type){
+    selectedType = guess.type;
+    document.querySelectorAll('.type-opt').forEach(o=> o.classList.toggle('active', o.dataset.type===selectedType));
   }
+  updateEntradaStatus();
 });
 
-document.getElementById('btnCapture').addEventListener('click', ()=> captureAndRead());
-document.getElementById('fileUpload').addEventListener('change', (e)=>{
-  const file = e.target.files[0];
-  if(!file) return;
-  const img = new Image();
-  img.onload = ()=> {
-    const base = drawToCanvas(img, img.naturalWidth, img.naturalHeight, 1600);
-    runOcrPipeline(base);
-    URL.revokeObjectURL(img.src);
-  };
-  img.src = URL.createObjectURL(file);
-  e.target.value = ''; // permite volver a subir la misma foto si se quiere reintentar
-});
-
-function captureAndRead(){
-  const video = document.getElementById('videoEntrada');
-  // recortar solo la zona guía (centro) para mejorar precisión, a resolución completa del video
-  const vw = video.videoWidth, vh = video.videoHeight;
-  const cropX = vw*0.04, cropY = vh*0.28, cropW = vw*0.92, cropH = vh*0.44;
-  const cropCanvas = document.createElement('canvas');
-  cropCanvas.width = cropW; cropCanvas.height = cropH;
-  cropCanvas.getContext('2d').drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
-  runOcrPipeline(cropCanvas, true); // ya viene recortado a la placa, no hace falta detectar amarillo
-}
-
-/* ---- utilidades de imagen para mejorar exactitud y velocidad del OCR ---- */
-
-// dibuja una imagen/video/canvas fuente en un canvas nuevo, limitando el lado mayor a maxSide (más rápido y estable)
-function drawToCanvas(source, srcW, srcH, maxSide){
-  const scale = Math.min(1, maxSide / Math.max(srcW, srcH));
-  const w = Math.max(1, Math.round(srcW * scale));
-  const h = Math.max(1, Math.round(srcH * scale));
-  const c = document.createElement('canvas');
-  c.width = w; c.height = h;
-  const ctx = c.getContext('2d');
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(source, 0, 0, w, h);
-  return c;
-}
-
-// busca la región amarilla (fondo típico de una placa colombiana) para recortar automáticamente
-// solo el área de la placa dentro de una foto completa (útil cuando se sube una foto sin recortar)
-function detectYellowRegion(canvas){
-  const ctx = canvas.getContext('2d');
-  const { width:w, height:h } = canvas;
-  const step = Math.max(1, Math.round(Math.max(w,h) / 300)); // muestreo para velocidad
-  const data = ctx.getImageData(0,0,w,h).data;
-  let minX=w, minY=h, maxX=0, maxY=0, hits=0;
-  for(let y=0;y<h;y+=step){
-    for(let x=0;x<w;x+=step){
-      const i = (y*w+x)*4;
-      const r=data[i], g=data[i+1], b=data[i+2];
-      const isYellow = r>140 && g>110 && b<150 && (r-b)>55 && (g-b)>25 && Math.abs(r-g)<70;
-      if(isYellow){
-        hits++;
-        if(x<minX)minX=x; if(x>maxX)maxX=x;
-        if(y<minY)minY=y; if(y>maxY)maxY=y;
-      }
-    }
+function updateEntradaStatus(){
+  const value = plateReadInput.value.trim();
+  const statusEl = document.getElementById('statusEntrada');
+  if(!value){
+    statusEl.className = 'status-line';
+    statusEl.textContent = 'Escribe la placa y selecciona el tipo de vehículo.';
+    return;
   }
-  const area = (maxX-minX) * (maxY-minY);
-  const totalArea = w*h;
-  if(hits < 15 || area < totalArea*0.015) return null; // no hay suficiente evidencia de una placa amarilla
-  // margen alrededor de la región detectada
-  const padX = (maxX-minX)*0.10, padY = (maxY-minY)*0.25;
-  return {
-    x: Math.max(0, minX-padX),
-    y: Math.max(0, minY-padY),
-    w: Math.min(w, (maxX-minX)+padX*2),
-    h: Math.min(h, (maxY-minY)+padY*2)
-  };
-}
-
-function cropCanvasRegion(canvas, region){
-  const c = document.createElement('canvas');
-  c.width = region.w; c.height = region.h;
-  c.getContext('2d').drawImage(canvas, region.x, region.y, region.w, region.h, 0, 0, region.w, region.h);
-  return c;
-}
-
-// si el recorte quedó pequeño, lo agranda para que Tesseract vea los caracteres con más detalle
-function upscaleIfSmall(canvas, minWidth){
-  if(canvas.width >= minWidth) return canvas;
-  const scale = minWidth / canvas.width;
-  const c = document.createElement('canvas');
-  c.width = Math.round(canvas.width*scale);
-  c.height = Math.round(canvas.height*scale);
-  const ctx = c.getContext('2d');
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(canvas, 0, 0, c.width, c.height);
-  return c;
-}
-
-// escala de grises + contraste, con umbral binario opcional (varios umbrales = varios "intentos" de lectura)
-function preprocessCanvas(srcCanvas, threshold){
-  const c = document.createElement('canvas');
-  c.width = srcCanvas.width; c.height = srcCanvas.height;
-  const ctx = c.getContext('2d');
-  ctx.drawImage(srcCanvas, 0, 0);
-  const imgData = ctx.getImageData(0,0,c.width,c.height);
-  const d = imgData.data;
-  for(let i=0;i<d.length;i+=4){
-    const gray = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
-    const contrasted = Math.min(255, Math.max(0, (gray-128)*1.7 + 128));
-    const v = threshold ? (contrasted > threshold ? 255 : 0) : contrasted;
-    d[i]=d[i+1]=d[i+2]=v;
+  if(!selectedType){
+    statusEl.className = 'status-line';
+    statusEl.textContent = 'Selecciona el tipo de vehículo (moto o carro).';
+    return;
   }
-  ctx.putImageData(imgData,0,0);
-  return c;
-}
-
-/* ---- pipeline principal de lectura: recorta, mejora y prueba varias veces hasta acertar ---- */
-async function runOcrPipeline(sourceCanvas, alreadyCropped){
-  document.getElementById('statusEntrada').className = 'status-line';
-  document.getElementById('statusEntrada').textContent = 'Analizando imagen…';
-  try{
-    // 1) si no viene ya recortado (ej. foto subida completa), intenta ubicar la placa amarilla
-    let working = sourceCanvas;
-    if(!alreadyCropped){
-      const region = detectYellowRegion(sourceCanvas);
-      if(region) working = cropCanvasRegion(sourceCanvas, region);
-    }
-    // 2) si el recorte quedó pequeño, se agranda para que se lean bien los caracteres
-    working = upscaleIfSmall(working, 640);
-
-    const worker = await getWorker();
-    // 3) varios intentos de binarizado, del más al menos agresivo; se detiene apenas uno calza el formato
-    const attempts = [150, 120, 95, null]; // null = solo gris+contraste, sin binarizar
-    let bestGuess = null;
-    for(let i=0;i<attempts.length;i++){
-      document.getElementById('statusEntrada').textContent = 'Leyendo placa (intento ' + (i+1) + '/' + attempts.length + ')…';
-      const processed = preprocessCanvas(working, attempts[i]);
-      const { data } = await worker.recognize(processed);
-      const guess = normalizeAndDetect(data.text);
-      if(!bestGuess) bestGuess = guess;
-      if(guess.ok){ bestGuess = guess; break; }
-    }
-    showPlateResult(bestGuess);
-  }catch(err){
-    document.getElementById('statusEntrada').className = 'status-line err';
-    document.getElementById('statusEntrada').textContent = 'Error de OCR: ' + err.message;
-  }
-}
-
-function showPlateResult(guess){
-  document.getElementById('plateReadBox').classList.remove('hidden');
-  document.getElementById('typeToggle').classList.remove('hidden');
-  document.getElementById('confirmRow').classList.remove('hidden');
-  document.getElementById('plateReadInput').value = guess.plate;
-  selectedType = guess.type;
-  document.querySelectorAll('.type-opt').forEach(o=> o.classList.toggle('active', o.dataset.type===selectedType));
-
-  if(guess.ok){
-    document.getElementById('statusEntrada').className = 'status-line ok';
-    document.getElementById('statusEntrada').textContent = '✔ Placa reconocida como ' + (guess.type==='moto'?'MOTOCICLETA':'CARRO') + '. Verifica y confirma.';
+  const re = selectedType==='moto' ? RE_MOTO : RE_CARRO;
+  if(re.test(value)){
+    statusEl.className = 'status-line ok';
+    statusEl.textContent = '✔ Formato válido para ' + (selectedType==='moto'?'MOTOCICLETA':'CARRO') + '.';
   } else {
-    document.getElementById('statusEntrada').className = 'status-line err';
-    document.getElementById('statusEntrada').textContent = '⚠ No se pudo determinar el formato automáticamente. Corrige la placa y elige el tipo de vehículo manualmente.';
+    statusEl.className = 'status-line err';
+    statusEl.textContent = '⚠ La placa no coincide con el formato de ' + (selectedType==='moto'?'moto (LLL·NN·L)':'carro (LLL·NNN)') + '.';
   }
 }
 
@@ -698,15 +505,17 @@ document.querySelectorAll('.type-opt').forEach(opt=>{
   opt.addEventListener('click', ()=>{
     selectedType = opt.dataset.type;
     document.querySelectorAll('.type-opt').forEach(o=>o.classList.toggle('active', o===opt));
+    updateEntradaStatus();
   });
 });
 
 document.getElementById('btnRetryEntry').addEventListener('click', ()=>{
-  document.getElementById('plateReadBox').classList.add('hidden');
-  document.getElementById('typeToggle').classList.add('hidden');
-  document.getElementById('confirmRow').classList.add('hidden');
+  plateReadInput.value = '';
+  selectedType = null;
+  document.querySelectorAll('.type-opt').forEach(o=>o.classList.remove('active'));
   document.getElementById('statusEntrada').className = 'status-line';
-  document.getElementById('statusEntrada').textContent = 'Esperando nueva captura…';
+  document.getElementById('statusEntrada').textContent = 'Escribe la placa y selecciona el tipo de vehículo.';
+  plateReadInput.focus();
 });
 
 /* =========================================================================
@@ -755,12 +564,13 @@ document.getElementById('btnConfirmEntry').addEventListener('click', async ()=>{
   renderLastTicket(record);
   printTicket(record);
 
-  // reset del panel de lectura
-  document.getElementById('plateReadBox').classList.add('hidden');
-  document.getElementById('typeToggle').classList.add('hidden');
-  document.getElementById('confirmRow').classList.add('hidden');
-  document.getElementById('statusEntrada').className = 'status-line';
+  // reset del formulario para el siguiente vehículo
+  plateReadInput.value = '';
+  selectedType = null;
+  document.querySelectorAll('.type-opt').forEach(o=>o.classList.remove('active'));
+  document.getElementById('statusEntrada').className = 'status-line ok';
   document.getElementById('statusEntrada').textContent = 'Ticket impreso. Listo para el siguiente vehículo.';
+  plateReadInput.focus();
 });
 
 function renderLastTicket(record){
