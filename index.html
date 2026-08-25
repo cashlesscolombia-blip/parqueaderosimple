@@ -509,7 +509,8 @@ async function getWorker(){
   tesseractWorker = await Tesseract.createWorker('eng');
   await tesseractWorker.setParameters({
     tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
-    tessedit_pageseg_mode: '7' // línea única de texto, ideal para placas
+    tessedit_pageseg_mode: '7',   // línea única de texto, ideal para una placa ya recortada
+    tessedit_ocr_engine_mode: '1' // solo motor LSTM: más rápido y más preciso que el modo combinado por defecto
   });
   return tesseractWorker;
 }
@@ -535,45 +536,141 @@ document.getElementById('fileUpload').addEventListener('change', (e)=>{
   const file = e.target.files[0];
   if(!file) return;
   const img = new Image();
-  img.onload = ()=> runOcrOnImage(img);
+  img.onload = ()=> {
+    const base = drawToCanvas(img, img.naturalWidth, img.naturalHeight, 1600);
+    runOcrPipeline(base);
+    URL.revokeObjectURL(img.src);
+  };
   img.src = URL.createObjectURL(file);
+  e.target.value = ''; // permite volver a subir la misma foto si se quiere reintentar
 });
 
 function captureAndRead(){
   const video = document.getElementById('videoEntrada');
-  const canvas = document.getElementById('canvasEntrada');
-  // recortar solo la zona guía (centro) para mejorar precisión
+  // recortar solo la zona guía (centro) para mejorar precisión, a resolución completa del video
   const vw = video.videoWidth, vh = video.videoHeight;
   const cropX = vw*0.04, cropY = vh*0.28, cropW = vw*0.92, cropH = vh*0.44;
-  canvas.width = cropW; canvas.height = cropH;
-  const ctx = canvas.getContext('2d');
-  ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
-  preprocessCanvas(canvas);
-  runOcrOnImage(canvas);
+  const cropCanvas = document.createElement('canvas');
+  cropCanvas.width = cropW; cropCanvas.height = cropH;
+  cropCanvas.getContext('2d').drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+  runOcrPipeline(cropCanvas, true); // ya viene recortado a la placa, no hace falta detectar amarillo
 }
 
-function preprocessCanvas(canvas){
-  // escala de grises + contraste + umbral binario para mejorar el OCR
+/* ---- utilidades de imagen para mejorar exactitud y velocidad del OCR ---- */
+
+// dibuja una imagen/video/canvas fuente en un canvas nuevo, limitando el lado mayor a maxSide (más rápido y estable)
+function drawToCanvas(source, srcW, srcH, maxSide){
+  const scale = Math.min(1, maxSide / Math.max(srcW, srcH));
+  const w = Math.max(1, Math.round(srcW * scale));
+  const h = Math.max(1, Math.round(srcH * scale));
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const ctx = c.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(source, 0, 0, w, h);
+  return c;
+}
+
+// busca la región amarilla (fondo típico de una placa colombiana) para recortar automáticamente
+// solo el área de la placa dentro de una foto completa (útil cuando se sube una foto sin recortar)
+function detectYellowRegion(canvas){
   const ctx = canvas.getContext('2d');
-  const imgData = ctx.getImageData(0,0,canvas.width,canvas.height);
+  const { width:w, height:h } = canvas;
+  const step = Math.max(1, Math.round(Math.max(w,h) / 300)); // muestreo para velocidad
+  const data = ctx.getImageData(0,0,w,h).data;
+  let minX=w, minY=h, maxX=0, maxY=0, hits=0;
+  for(let y=0;y<h;y+=step){
+    for(let x=0;x<w;x+=step){
+      const i = (y*w+x)*4;
+      const r=data[i], g=data[i+1], b=data[i+2];
+      const isYellow = r>140 && g>110 && b<150 && (r-b)>55 && (g-b)>25 && Math.abs(r-g)<70;
+      if(isYellow){
+        hits++;
+        if(x<minX)minX=x; if(x>maxX)maxX=x;
+        if(y<minY)minY=y; if(y>maxY)maxY=y;
+      }
+    }
+  }
+  const area = (maxX-minX) * (maxY-minY);
+  const totalArea = w*h;
+  if(hits < 15 || area < totalArea*0.015) return null; // no hay suficiente evidencia de una placa amarilla
+  // margen alrededor de la región detectada
+  const padX = (maxX-minX)*0.10, padY = (maxY-minY)*0.25;
+  return {
+    x: Math.max(0, minX-padX),
+    y: Math.max(0, minY-padY),
+    w: Math.min(w, (maxX-minX)+padX*2),
+    h: Math.min(h, (maxY-minY)+padY*2)
+  };
+}
+
+function cropCanvasRegion(canvas, region){
+  const c = document.createElement('canvas');
+  c.width = region.w; c.height = region.h;
+  c.getContext('2d').drawImage(canvas, region.x, region.y, region.w, region.h, 0, 0, region.w, region.h);
+  return c;
+}
+
+// si el recorte quedó pequeño, lo agranda para que Tesseract vea los caracteres con más detalle
+function upscaleIfSmall(canvas, minWidth){
+  if(canvas.width >= minWidth) return canvas;
+  const scale = minWidth / canvas.width;
+  const c = document.createElement('canvas');
+  c.width = Math.round(canvas.width*scale);
+  c.height = Math.round(canvas.height*scale);
+  const ctx = c.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(canvas, 0, 0, c.width, c.height);
+  return c;
+}
+
+// escala de grises + contraste, con umbral binario opcional (varios umbrales = varios "intentos" de lectura)
+function preprocessCanvas(srcCanvas, threshold){
+  const c = document.createElement('canvas');
+  c.width = srcCanvas.width; c.height = srcCanvas.height;
+  const ctx = c.getContext('2d');
+  ctx.drawImage(srcCanvas, 0, 0);
+  const imgData = ctx.getImageData(0,0,c.width,c.height);
   const d = imgData.data;
   for(let i=0;i<d.length;i+=4){
     const gray = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
-    const contrasted = Math.min(255, Math.max(0, (gray-128)*1.6 + 128));
-    const v = contrasted > 130 ? 255 : 0; // umbral binario
+    const contrasted = Math.min(255, Math.max(0, (gray-128)*1.7 + 128));
+    const v = threshold ? (contrasted > threshold ? 255 : 0) : contrasted;
     d[i]=d[i+1]=d[i+2]=v;
   }
   ctx.putImageData(imgData,0,0);
+  return c;
 }
 
-async function runOcrOnImage(imgOrCanvas){
+/* ---- pipeline principal de lectura: recorta, mejora y prueba varias veces hasta acertar ---- */
+async function runOcrPipeline(sourceCanvas, alreadyCropped){
   document.getElementById('statusEntrada').className = 'status-line';
-  document.getElementById('statusEntrada').textContent = 'Leyendo placa (OCR)…';
+  document.getElementById('statusEntrada').textContent = 'Analizando imagen…';
   try{
+    // 1) si no viene ya recortado (ej. foto subida completa), intenta ubicar la placa amarilla
+    let working = sourceCanvas;
+    if(!alreadyCropped){
+      const region = detectYellowRegion(sourceCanvas);
+      if(region) working = cropCanvasRegion(sourceCanvas, region);
+    }
+    // 2) si el recorte quedó pequeño, se agranda para que se lean bien los caracteres
+    working = upscaleIfSmall(working, 640);
+
     const worker = await getWorker();
-    const { data } = await worker.recognize(imgOrCanvas);
-    const guess = normalizeAndDetect(data.text);
-    showPlateResult(guess);
+    // 3) varios intentos de binarizado, del más al menos agresivo; se detiene apenas uno calza el formato
+    const attempts = [150, 120, 95, null]; // null = solo gris+contraste, sin binarizar
+    let bestGuess = null;
+    for(let i=0;i<attempts.length;i++){
+      document.getElementById('statusEntrada').textContent = 'Leyendo placa (intento ' + (i+1) + '/' + attempts.length + ')…';
+      const processed = preprocessCanvas(working, attempts[i]);
+      const { data } = await worker.recognize(processed);
+      const guess = normalizeAndDetect(data.text);
+      if(!bestGuess) bestGuess = guess;
+      if(guess.ok){ bestGuess = guess; break; }
+    }
+    showPlateResult(bestGuess);
   }catch(err){
     document.getElementById('statusEntrada').className = 'status-line err';
     document.getElementById('statusEntrada').textContent = 'Error de OCR: ' + err.message;
