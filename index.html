@@ -1,0 +1,836 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ParqueoPlaca · Control de Ingreso y Salida</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --asphalt:#12161c;
+    --asphalt-2:#1b212a;
+    --panel:#20272f;
+    --panel-hi:#2a323c;
+    --line:#333d49;
+    --yellow:#f5c518;
+    --yellow-dim:#caa20f;
+    --black-plate:#111111;
+    --text:#f2f3f0;
+    --muted:#9aa4b2;
+    --green:#3ddc84;
+    --red:#ff5a5f;
+    --radius:14px;
+    --mono:'IBM Plex Mono', monospace;
+    --sign:'Bebas Neue', sans-serif;
+    --body:'Inter', sans-serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:
+      repeating-linear-gradient(135deg, rgba(245,197,24,0.035) 0 18px, transparent 18px 36px),
+      radial-gradient(1200px 600px at 20% -10%, #232b35 0%, var(--asphalt) 55%),
+      var(--asphalt);
+    color:var(--text);
+    font-family:var(--body);
+    min-height:100vh;
+  }
+  .app{max-width:1180px;margin:0 auto;padding:0 20px 60px;}
+
+  /* ---------- Topbar ---------- */
+  .topbar{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:22px 4px 18px;flex-wrap:wrap;gap:14px;
+  }
+  .brand{display:flex;align-items:center;gap:14px;}
+  .brand .mark{
+    width:46px;height:46px;border-radius:10px;background:var(--yellow);
+    display:flex;align-items:center;justify-content:center;
+    border:3px solid var(--black-plate);
+    box-shadow:0 4px 0 rgba(0,0,0,.35);
+    transform:rotate(-4deg);
+  }
+  .brand .mark svg{width:26px;height:26px;}
+  .brand h1{
+    font-family:var(--sign);font-size:30px;letter-spacing:1px;margin:0;
+    line-height:1;color:var(--yellow);
+  }
+  .brand p{margin:2px 0 0;color:var(--muted);font-size:12.5px;letter-spacing:.4px;}
+
+  .tabs{display:flex;gap:8px;background:var(--asphalt-2);padding:6px;border-radius:12px;border:1px solid var(--line);}
+  .tab{
+    appearance:none;border:none;background:transparent;color:var(--muted);
+    font-family:var(--body);font-weight:700;font-size:13.5px;letter-spacing:.3px;
+    padding:10px 16px;border-radius:8px;cursor:pointer;transition:.15s;
+  }
+  .tab:hover{color:var(--text);}
+  .tab.active{background:var(--yellow);color:#181005;}
+
+  /* ---------- Boom barrier signature element ---------- */
+  .barrier-wrap{
+    position:relative;height:64px;margin:6px 0 26px;
+    display:flex;align-items:center;
+  }
+  .barrier-post{
+    width:14px;height:52px;background:linear-gradient(180deg,#3a4451,#20262e);
+    border-radius:4px;position:relative;z-index:2;
+  }
+  .barrier-arm{
+    height:16px;width:340px;max-width:60vw;
+    background:repeating-linear-gradient(90deg,var(--yellow) 0 26px,var(--black-plate) 26px 34px);
+    border-radius:6px;transform-origin:left center;
+    transform:rotate(0deg);
+    transition:transform .55s cubic-bezier(.36,1.4,.4,1);
+    position:relative;z-index:1;box-shadow:0 3px 0 rgba(0,0,0,.4);
+    margin-left:-3px;
+  }
+  .barrier-wrap.open .barrier-arm{transform:rotate(-72deg) translateX(2px);}
+  .barrier-label{
+    font-family:var(--mono);font-size:11.5px;color:var(--muted);
+    margin-left:16px;letter-spacing:.5px;
+  }
+
+  /* ---------- Panels ---------- */
+  .grid{display:grid;grid-template-columns:1.15fr .85fr;gap:20px;}
+  @media (max-width:860px){.grid{grid-template-columns:1fr;}}
+  .panel{
+    background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+    padding:22px;
+  }
+  .panel h2{
+    font-family:var(--sign);font-size:22px;letter-spacing:.5px;margin:0 0 4px;color:var(--text);
+  }
+  .panel .sub{color:var(--muted);font-size:13px;margin:0 0 18px;}
+
+  .cam-box{
+    position:relative;border-radius:10px;overflow:hidden;background:#000;
+    border:1px solid var(--line);aspect-ratio:4/3;
+  }
+  .cam-box video, .cam-box canvas{width:100%;height:100%;object-fit:cover;display:block;}
+  .cam-guide{
+    position:absolute;left:8%;right:8%;top:40%;height:22%;
+    border:3px dashed var(--yellow);border-radius:8px;pointer-events:none;
+    box-shadow:0 0 0 2000px rgba(0,0,0,.35);
+  }
+  .cam-guide::after{
+    content:'Encuadra la placa aquí';position:absolute;bottom:-24px;left:0;
+    font-size:11px;color:var(--yellow);font-family:var(--mono);
+  }
+  .cam-off{
+    display:flex;align-items:center;justify-content:center;height:100%;
+    color:var(--muted);font-size:13px;text-align:center;padding:20px;
+  }
+
+  .btn{
+    appearance:none;border:none;cursor:pointer;font-family:var(--body);
+    font-weight:700;font-size:14px;padding:12px 18px;border-radius:10px;
+    transition:.15s;letter-spacing:.2px;
+  }
+  .btn-yellow{background:var(--yellow);color:#181005;}
+  .btn-yellow:hover{background:#ffd749;}
+  .btn-ghost{background:transparent;border:1px solid var(--line);color:var(--text);}
+  .btn-ghost:hover{border-color:var(--yellow);color:var(--yellow);}
+  .btn-green{background:var(--green);color:#052012;}
+  .btn-red{background:var(--red);color:#2a0506;}
+  .btn:disabled{opacity:.45;cursor:not-allowed;}
+  .row{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px;}
+
+  .plate-read{
+    margin-top:18px;background:var(--yellow);border:4px solid var(--black-plate);
+    border-radius:8px;padding:10px 16px;display:flex;align-items:center;justify-content:space-between;gap:12px;
+  }
+  .plate-read input{
+    background:transparent;border:none;outline:none;
+    font-family:var(--mono);font-weight:700;font-size:30px;letter-spacing:6px;
+    color:var(--black-plate);width:100%;text-align:center;text-transform:uppercase;
+  }
+  .type-toggle{display:flex;gap:8px;margin-top:12px;}
+  .type-opt{
+    flex:1;text-align:center;padding:10px;border-radius:8px;border:1px solid var(--line);
+    cursor:pointer;font-size:13px;font-weight:700;color:var(--muted);
+  }
+  .type-opt.active{border-color:var(--yellow);color:var(--yellow);background:rgba(245,197,24,.08);}
+
+  .status-line{
+    font-family:var(--mono);font-size:12.5px;color:var(--muted);margin-top:12px;min-height:18px;
+  }
+  .status-line.ok{color:var(--green);}
+  .status-line.err{color:var(--red);}
+
+  .ticket-preview{
+    margin-top:18px;background:#fff;color:#111;border-radius:10px;padding:18px;
+    font-family:var(--mono);
+  }
+  .ticket-preview h3{margin:0 0 6px;font-family:var(--sign);letter-spacing:1px;font-size:22px;}
+  .ticket-preview .plate-big{
+    background:var(--yellow);border:3px solid #000;border-radius:6px;text-align:center;
+    font-size:26px;font-weight:700;letter-spacing:4px;padding:6px 0;margin:10px 0;
+  }
+  .ticket-preview .meta{font-size:12px;line-height:1.7;color:#333;}
+  .ticket-preview svg{width:100%;margin-top:8px;}
+
+  .list{margin-top:10px;}
+  .list-item{
+    display:flex;align-items:center;justify-content:between;gap:10px;
+    padding:10px 12px;border:1px solid var(--line);border-radius:8px;margin-bottom:8px;
+    background:var(--panel-hi);
+  }
+  .list-item .lp{font-family:var(--mono);font-weight:700;letter-spacing:2px;color:var(--yellow);}
+  .list-item .meta{margin-left:auto;font-size:11.5px;color:var(--muted);text-align:right;}
+  .pill{font-size:10.5px;padding:3px 8px;border-radius:20px;font-weight:700;letter-spacing:.4px;}
+  .pill.dentro{background:rgba(61,220,132,.15);color:var(--green);}
+  .pill.afuera{background:rgba(255,90,95,.15);color:var(--red);}
+
+  .scan-input{
+    width:100%;padding:16px;font-family:var(--mono);font-size:20px;letter-spacing:4px;
+    text-align:center;text-transform:uppercase;background:var(--asphalt-2);
+    border:2px solid var(--line);border-radius:10px;color:var(--yellow);outline:none;
+  }
+  .scan-input:focus{border-color:var(--yellow);}
+
+  /* ---------- Admin ---------- */
+  .login-box{max-width:340px;margin:60px auto;text-align:center;}
+  .login-box input{
+    width:100%;padding:14px;font-size:22px;letter-spacing:8px;text-align:center;
+    font-family:var(--mono);background:var(--asphalt-2);border:2px solid var(--line);
+    border-radius:10px;color:var(--text);outline:none;margin:14px 0;
+  }
+  .stat-row{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px;}
+  @media (max-width:700px){.stat-row{grid-template-columns:repeat(2,1fr);}}
+  .stat-card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;}
+  .stat-card .num{font-family:var(--sign);font-size:34px;color:var(--yellow);line-height:1;}
+  .stat-card .lab{font-size:11.5px;color:var(--muted);margin-top:4px;letter-spacing:.3px;}
+
+  .group-title{
+    font-family:var(--sign);font-size:19px;letter-spacing:.5px;margin:26px 0 10px;
+    display:flex;align-items:center;gap:8px;color:var(--yellow);
+  }
+  table{width:100%;border-collapse:collapse;font-size:13px;}
+  th,td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line);}
+  th{color:var(--muted);font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.4px;}
+  td.plate-cell{font-family:var(--mono);font-weight:700;letter-spacing:2px;color:var(--yellow);}
+  .toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:6px;}
+  .search-box{
+    flex:1;min-width:180px;padding:10px 12px;background:var(--asphalt-2);
+    border:1px solid var(--line);border-radius:8px;color:var(--text);font-family:var(--body);
+  }
+
+  #toast{
+    position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(20px);
+    background:var(--panel-hi);border:1px solid var(--line);padding:12px 20px;border-radius:10px;
+    font-size:13.5px;opacity:0;pointer-events:none;transition:.25s;z-index:50;max-width:90vw;
+  }
+  #toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+  #toast.ok{border-color:var(--green);color:var(--green);}
+  #toast.err{border-color:var(--red);color:var(--red);}
+
+  #print-area{display:none;}
+  @media print{
+    body *{visibility:hidden;}
+    #print-area, #print-area *{visibility:visible;}
+    #print-area{
+      display:block;position:absolute;top:0;left:0;width:72mm;padding:6mm;
+      font-family:var(--mono);color:#000;
+    }
+  }
+  .hidden{display:none !important;}
+  .foot-note{color:var(--muted);font-size:11.5px;margin-top:22px;line-height:1.6;}
+  a{color:var(--yellow);}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <div class="topbar">
+    <div class="brand">
+      <div class="mark">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M3 12h18M3 12a2 2 0 0 1 2-2h1l1.5-4h9L18 10h1a2 2 0 0 1 2 2v5a1 1 0 0 1-1 1h-1a2 2 0 1 1-4 0H9a2 2 0 1 1-4 0H4a1 1 0 0 1-1-1v-5Z" stroke="#111" stroke-width="1.8" stroke-linejoin="round"/></svg>
+      </div>
+      <div>
+        <h1>PARQUEOPLACA</h1>
+        <p>Control de ingreso y salida por lectura de placa</p>
+      </div>
+    </div>
+    <div class="tabs">
+      <button class="tab active" data-view="entrada">Entrada</button>
+      <button class="tab" data-view="salida">Salida</button>
+      <button class="tab" data-view="admin">Admin</button>
+    </div>
+  </div>
+
+  <div class="barrier-wrap" id="barrierWrap">
+    <div class="barrier-post"></div>
+    <div class="barrier-arm" id="barrierArm"></div>
+    <span class="barrier-label" id="barrierLabel">BARRERA · EN REPOSO</span>
+  </div>
+
+  <!-- ======================= ENTRADA ======================= -->
+  <section id="view-entrada">
+    <div class="grid">
+      <div class="panel">
+        <h2>Lectura de placa · Ingreso</h2>
+        <p class="sub">Encuadra la placa dentro del recuadro amarillo y captura. Motos: 3 letras + 2 números + 1 letra. Carros: 3 letras + 3 números.</p>
+
+        <div class="cam-box" id="camBoxEntrada">
+          <div class="cam-off" id="camOffEntrada">
+            Cámara no iniciada.<br><button class="btn btn-yellow" style="margin-top:10px" id="btnStartCamEntrada">Activar cámara</button>
+          </div>
+          <video id="videoEntrada" autoplay playsinline muted style="display:none"></video>
+          <div class="cam-guide" id="guideEntrada" style="display:none"></div>
+        </div>
+        <canvas id="canvasEntrada" class="hidden"></canvas>
+
+        <div class="row">
+          <button class="btn btn-yellow" id="btnCapture" disabled>📷 Capturar y leer placa</button>
+          <label class="btn btn-ghost" style="display:inline-flex;align-items:center;cursor:pointer;">
+            Subir foto de placa
+            <input type="file" id="fileUpload" accept="image/*" capture="environment" style="display:none">
+          </label>
+        </div>
+        <div class="status-line" id="statusEntrada">Esperando captura…</div>
+
+        <div class="plate-read hidden" id="plateReadBox">
+          <input type="text" id="plateReadInput" maxlength="8" value="">
+        </div>
+        <div class="type-toggle hidden" id="typeToggle">
+          <div class="type-opt" data-type="moto">🏍 MOTO (LLL·NN·L)</div>
+          <div class="type-opt" data-type="carro">🚗 CARRO (LLL·NNN)</div>
+        </div>
+        <div class="row hidden" id="confirmRow">
+          <button class="btn btn-green" id="btnConfirmEntry">✔ Generar ticket e imprimir</button>
+          <button class="btn btn-ghost" id="btnRetryEntry">Reintentar lectura</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Último ticket generado</h2>
+        <p class="sub">Vista previa del ticket con código de barras (Code128 = número de placa).</p>
+        <div id="lastTicketBox">
+          <div class="status-line">Aún no se ha generado ningún ticket en esta sesión.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================= SALIDA ======================= -->
+  <section id="view-salida" class="hidden">
+    <div class="grid">
+      <div class="panel">
+        <h2>Salida de vehículo</h2>
+        <p class="sub">Escanea el código de barras del ticket con el lector láser, o escribe la placa manualmente y presiona Enter.</p>
+        <input type="text" id="scanInput" class="scan-input" placeholder="ESPERANDO ESCANEO…" autofocus>
+        <div class="status-line" id="statusSalida">Listo para escanear.</div>
+        <div id="exitResultBox"></div>
+      </div>
+      <div class="panel">
+        <h2>Vehículos dentro</h2>
+        <p class="sub">Actualiza para ver el listado de vehículos que aún no han salido.</p>
+        <button class="btn btn-ghost" id="btnRefreshInside">↻ Actualizar</button>
+        <div class="list" id="insideList"><div class="status-line">Cargando…</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================= ADMIN LOGIN ======================= -->
+  <section id="view-admin-login" class="hidden">
+    <div class="panel login-box">
+      <h2>Acceso administrador</h2>
+      <p class="sub">Ingresa la contraseña para ver el dashboard.</p>
+      <input type="password" id="adminPass" maxlength="6" placeholder="••">
+      <button class="btn btn-yellow" id="btnAdminLogin" style="width:100%">Ingresar</button>
+      <div class="status-line err" id="adminLoginError"></div>
+    </div>
+  </section>
+
+  <!-- ======================= ADMIN DASHBOARD ======================= -->
+  <section id="view-admin" class="hidden">
+    <div class="panel" style="margin-bottom:20px;">
+      <div class="toolbar">
+        <h2 style="margin:0;flex:1;">Dashboard de parqueadero</h2>
+        <button class="btn btn-ghost" id="btnRefreshAdmin">↻ Actualizar</button>
+        <button class="btn btn-ghost" id="btnLogoutAdmin">Cerrar sesión</button>
+      </div>
+    </div>
+
+    <div class="stat-row" id="statRow">
+      <div class="stat-card"><div class="num" id="statTotal">0</div><div class="lab">TICKETS TOTALES</div></div>
+      <div class="stat-card"><div class="num" id="statDentro">0</div><div class="lab">VEHÍCULOS DENTRO</div></div>
+      <div class="stat-card"><div class="num" id="statMotos">0</div><div class="lab">MOTOS DENTRO</div></div>
+      <div class="stat-card"><div class="num" id="statCarros">0</div><div class="lab">CARROS DENTRO</div></div>
+    </div>
+
+    <div class="panel">
+      <div class="toolbar">
+        <input type="text" class="search-box" id="adminSearch" placeholder="Buscar por placa…">
+      </div>
+
+      <div class="group-title">🏍 Motocicletas</div>
+      <div style="overflow-x:auto"><table id="tableMoto">
+        <thead><tr><th>Placa</th><th>Código barra</th><th>Entrada</th><th>Salida</th><th>Estado</th><th>Ticket</th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+
+      <div class="group-title">🚗 Carros</div>
+      <div style="overflow-x:auto"><table id="tableCarro">
+        <thead><tr><th>Placa</th><th>Código barra</th><th>Entrada</th><th>Salida</th><th>Estado</th><th>Ticket</th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+    </div>
+
+    <p class="foot-note">
+      Conectado a Supabase · tabla <code>tickets_parqueadero</code>. Si no ves datos, verifica que ejecutaste el script SQL de creación de tabla y las políticas RLS (ver comentario al final del archivo / documentación entregada).
+    </p>
+  </section>
+
+</div>
+
+<div id="toast"></div>
+
+<!-- Área oculta usada solo para impresión -->
+<div id="print-area">
+  <div style="text-align:center;font-weight:700;font-size:16px;">PARQUEOPLACA</div>
+  <div style="text-align:center;font-size:10px;margin-bottom:6px;">Ticket de ingreso</div>
+  <div style="border:2px solid #000;text-align:center;font-size:22px;font-weight:700;letter-spacing:3px;padding:4px 0;margin:6px 0;" id="pPlate">---</div>
+  <div style="font-size:11px;line-height:1.6;">
+    Tipo: <b id="pTipo">-</b><br>
+    Ticket N°: <b id="pTicketNum">-</b><br>
+    Entrada: <b id="pFecha">-</b>
+  </div>
+  <svg id="pBarcode"></svg>
+  <div style="text-align:center;font-size:9px;margin-top:4px;">Conserve este ticket. Escanéelo a la salida.</div>
+</div>
+
+<script>
+/* =========================================================================
+   CONFIGURACIÓN SUPABASE
+   ========================================================================= */
+const SUPABASE_URL = "https://jehwevhxrnjxfepwaani.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImplaHdldmh4cm5qeGZlcHdhYW5pIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc2MjM0NjksImV4cCI6MjEwMzE5OTQ2OX0.NFi5auPXQFi4qQ_6Mv-QI9PB7JslKWdGKOocUkqeCtk";
+const TABLE = "tickets_parqueadero";
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+const ADMIN_PASSWORD = "12";
+
+/* =========================================================================
+   UTILIDADES GENERALES
+   ========================================================================= */
+function toast(msg, type){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'show' + (type ? (' ' + type) : '');
+  clearTimeout(toast._h);
+  toast._h = setTimeout(()=>{ t.className=''; }, 3400);
+}
+function fmtDate(iso){
+  if(!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleString('es-CO', {day:'2-digit',month:'2-digit',year:'2-digit',hour:'2-digit',minute:'2-digit'});
+}
+function setBarrier(open, label){
+  const w = document.getElementById('barrierWrap');
+  w.classList.toggle('open', open);
+  document.getElementById('barrierLabel').textContent = label || (open ? 'BARRERA · ABIERTA' : 'BARRERA · EN REPOSO');
+  if(open){
+    clearTimeout(setBarrier._h);
+    setBarrier._h = setTimeout(()=>{ w.classList.remove('open'); document.getElementById('barrierLabel').textContent='BARRERA · EN REPOSO'; }, 3200);
+  }
+}
+
+/* =========================================================================
+   NAVEGACIÓN ENTRE VISTAS
+   ========================================================================= */
+const views = {
+  entrada: document.getElementById('view-entrada'),
+  salida: document.getElementById('view-salida'),
+  admin: document.getElementById('view-admin-login'), // se reemplaza si ya hay sesión
+};
+let adminAuthed = false;
+
+document.querySelectorAll('.tab').forEach(tab=>{
+  tab.addEventListener('click', ()=> goTo(tab.dataset.view));
+});
+
+function goTo(name){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.view===name));
+  document.getElementById('view-entrada').classList.add('hidden');
+  document.getElementById('view-salida').classList.add('hidden');
+  document.getElementById('view-admin-login').classList.add('hidden');
+  document.getElementById('view-admin').classList.add('hidden');
+
+  if(name==='entrada') document.getElementById('view-entrada').classList.remove('hidden');
+  if(name==='salida'){
+    document.getElementById('view-salida').classList.remove('hidden');
+    refreshInsideList();
+    setTimeout(()=>document.getElementById('scanInput').focus(), 50);
+  }
+  if(name==='admin'){
+    if(adminAuthed){
+      document.getElementById('view-admin').classList.remove('hidden');
+      loadAdminData();
+    } else {
+      document.getElementById('view-admin-login').classList.remove('hidden');
+    }
+  }
+}
+
+/* =========================================================================
+   VALIDACIÓN Y NORMALIZACIÓN DE PLACAS
+   Moto:  3 letras + 2 números + 1 letra   -> ^[A-Z]{3}[0-9]{2}[A-Z]$
+   Carro: 3 letras + 3 números             -> ^[A-Z]{3}[0-9]{3}$
+   ========================================================================= */
+const RE_MOTO  = /^[A-Z]{3}[0-9]{2}[A-Z]$/;
+const RE_CARRO = /^[A-Z]{3}[0-9]{3}$/;
+
+function normalizeAndDetect(rawText){
+  const clean = (rawText || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  // probar substrings de longitud 6 (formato más común en ambos casos)
+  for(let i=0;i<=clean.length-6;i++){
+    const chunk = clean.substr(i,6);
+    if(RE_CARRO.test(chunk)) return {plate:chunk, type:'carro', ok:true};
+    if(RE_MOTO.test(chunk))  return {plate:chunk, type:'moto',  ok:true};
+  }
+  // sin coincidencia exacta: devolver mejor intento (primeros 6-7 caracteres) para edición manual
+  return {plate:clean.substr(0,7), type:null, ok:false};
+}
+
+/* =========================================================================
+   ENTRADA · CÁMARA + OCR (Tesseract.js)
+   ========================================================================= */
+let entradaStream = null;
+let tesseractWorker = null;
+let selectedType = null;
+
+async function getWorker(){
+  if(tesseractWorker) return tesseractWorker;
+  tesseractWorker = await Tesseract.createWorker('eng');
+  await tesseractWorker.setParameters({
+    tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
+    tessedit_pageseg_mode: '7' // línea única de texto, ideal para placas
+  });
+  return tesseractWorker;
+}
+
+document.getElementById('btnStartCamEntrada').addEventListener('click', async ()=>{
+  try{
+    entradaStream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:'environment', width:{ideal:1280}, height:{ideal:960} } });
+    const video = document.getElementById('videoEntrada');
+    video.srcObject = entradaStream;
+    video.style.display='block';
+    document.getElementById('camOffEntrada').style.display='none';
+    document.getElementById('guideEntrada').style.display='block';
+    document.getElementById('btnCapture').disabled = false;
+    document.getElementById('statusEntrada').textContent = 'Cámara activa. Encuadra la placa y captura.';
+  }catch(err){
+    document.getElementById('statusEntrada').textContent = 'No se pudo acceder a la cámara (' + err.message + '). Usa "Subir foto" como alternativa.';
+    document.getElementById('statusEntrada').className = 'status-line err';
+  }
+});
+
+document.getElementById('btnCapture').addEventListener('click', ()=> captureAndRead());
+document.getElementById('fileUpload').addEventListener('change', (e)=>{
+  const file = e.target.files[0];
+  if(!file) return;
+  const img = new Image();
+  img.onload = ()=> runOcrOnImage(img);
+  img.src = URL.createObjectURL(file);
+});
+
+function captureAndRead(){
+  const video = document.getElementById('videoEntrada');
+  const canvas = document.getElementById('canvasEntrada');
+  // recortar solo la zona guía (centro) para mejorar precisión
+  const vw = video.videoWidth, vh = video.videoHeight;
+  const cropX = vw*0.08, cropY = vh*0.40, cropW = vw*0.84, cropH = vh*0.22;
+  canvas.width = cropW; canvas.height = cropH;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+  preprocessCanvas(canvas);
+  runOcrOnImage(canvas);
+}
+
+function preprocessCanvas(canvas){
+  // escala de grises + contraste + umbral binario para mejorar el OCR
+  const ctx = canvas.getContext('2d');
+  const imgData = ctx.getImageData(0,0,canvas.width,canvas.height);
+  const d = imgData.data;
+  for(let i=0;i<d.length;i+=4){
+    const gray = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
+    const contrasted = Math.min(255, Math.max(0, (gray-128)*1.6 + 128));
+    const v = contrasted > 130 ? 255 : 0; // umbral binario
+    d[i]=d[i+1]=d[i+2]=v;
+  }
+  ctx.putImageData(imgData,0,0);
+}
+
+async function runOcrOnImage(imgOrCanvas){
+  document.getElementById('statusEntrada').className = 'status-line';
+  document.getElementById('statusEntrada').textContent = 'Leyendo placa (OCR)…';
+  try{
+    const worker = await getWorker();
+    const { data } = await worker.recognize(imgOrCanvas);
+    const guess = normalizeAndDetect(data.text);
+    showPlateResult(guess);
+  }catch(err){
+    document.getElementById('statusEntrada').className = 'status-line err';
+    document.getElementById('statusEntrada').textContent = 'Error de OCR: ' + err.message;
+  }
+}
+
+function showPlateResult(guess){
+  document.getElementById('plateReadBox').classList.remove('hidden');
+  document.getElementById('typeToggle').classList.remove('hidden');
+  document.getElementById('confirmRow').classList.remove('hidden');
+  document.getElementById('plateReadInput').value = guess.plate;
+  selectedType = guess.type;
+  document.querySelectorAll('.type-opt').forEach(o=> o.classList.toggle('active', o.dataset.type===selectedType));
+
+  if(guess.ok){
+    document.getElementById('statusEntrada').className = 'status-line ok';
+    document.getElementById('statusEntrada').textContent = '✔ Placa reconocida como ' + (guess.type==='moto'?'MOTOCICLETA':'CARRO') + '. Verifica y confirma.';
+  } else {
+    document.getElementById('statusEntrada').className = 'status-line err';
+    document.getElementById('statusEntrada').textContent = '⚠ No se pudo determinar el formato automáticamente. Corrige la placa y elige el tipo de vehículo manualmente.';
+  }
+}
+
+document.querySelectorAll('.type-opt').forEach(opt=>{
+  opt.addEventListener('click', ()=>{
+    selectedType = opt.dataset.type;
+    document.querySelectorAll('.type-opt').forEach(o=>o.classList.toggle('active', o===opt));
+  });
+});
+
+document.getElementById('btnRetryEntry').addEventListener('click', ()=>{
+  document.getElementById('plateReadBox').classList.add('hidden');
+  document.getElementById('typeToggle').classList.add('hidden');
+  document.getElementById('confirmRow').classList.add('hidden');
+  document.getElementById('statusEntrada').className = 'status-line';
+  document.getElementById('statusEntrada').textContent = 'Esperando nueva captura…';
+});
+
+/* =========================================================================
+   CONFIRMAR ENTRADA -> GUARDAR EN SUPABASE + IMPRIMIR TICKET
+   ========================================================================= */
+document.getElementById('btnConfirmEntry').addEventListener('click', async ()=>{
+  const plateRaw = document.getElementById('plateReadInput').value.toUpperCase().replace(/[^A-Z0-9]/g,'');
+  if(!selectedType){
+    toast('Selecciona el tipo de vehículo (moto o carro).', 'err');
+    return;
+  }
+  const re = selectedType==='moto' ? RE_MOTO : RE_CARRO;
+  if(!re.test(plateRaw)){
+    toast('El formato de la placa no coincide con el tipo seleccionado. Corrígela.', 'err');
+    return;
+  }
+
+  // evitar doble ingreso de la misma placa mientras sigue "dentro"
+  const { data: abiertos, error: errCheck } = await sb.from(TABLE).select('id').eq('placa', plateRaw).eq('estado','dentro');
+  if(errCheck){ toast('Error consultando Supabase: ' + errCheck.message, 'err'); return; }
+  if(abiertos && abiertos.length){
+    toast('Esta placa ya tiene un ticket de ingreso abierto.', 'err');
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const ticketNum = 'T' + Date.now().toString().slice(-8);
+  const record = {
+    placa: plateRaw,
+    tipo_vehiculo: selectedType,
+    codigo_barra: plateRaw,
+    ticket_numero: ticketNum,
+    fecha_entrada: now,
+    fecha_salida: null,
+    estado: 'dentro'
+  };
+
+  const { data, error } = await sb.from(TABLE).insert([record]).select();
+  if(error){
+    toast('No se pudo guardar en Supabase: ' + error.message, 'err');
+    return;
+  }
+
+  toast('Ticket generado para ' + plateRaw, 'ok');
+  setBarrier(true, 'BARRERA · SUBIENDO (INGRESO)');
+  renderLastTicket(record);
+  printTicket(record);
+
+  // reset del panel de lectura
+  document.getElementById('plateReadBox').classList.add('hidden');
+  document.getElementById('typeToggle').classList.add('hidden');
+  document.getElementById('confirmRow').classList.add('hidden');
+  document.getElementById('statusEntrada').className = 'status-line';
+  document.getElementById('statusEntrada').textContent = 'Ticket impreso. Listo para el siguiente vehículo.';
+});
+
+function renderLastTicket(record){
+  const box = document.getElementById('lastTicketBox');
+  box.innerHTML = `
+    <div class="ticket-preview">
+      <h3>PARQUEOPLACA</h3>
+      <div class="plate-big">${record.placa}</div>
+      <div class="meta">
+        Tipo: <b>${record.tipo_vehiculo.toUpperCase()}</b><br>
+        Ticket N°: <b>${record.ticket_numero}</b><br>
+        Entrada: <b>${fmtDate(record.fecha_entrada)}</b>
+      </div>
+      <svg id="lastBarcodeSvg"></svg>
+    </div>
+  `;
+  JsBarcode('#lastBarcodeSvg', record.placa, { format:'CODE128', displayValue:true, height:50, fontSize:14, margin:4 });
+}
+
+function printTicket(record){
+  document.getElementById('pPlate').textContent = record.placa;
+  document.getElementById('pTipo').textContent = record.tipo_vehiculo.toUpperCase();
+  document.getElementById('pTicketNum').textContent = record.ticket_numero;
+  document.getElementById('pFecha').textContent = fmtDate(record.fecha_entrada);
+  JsBarcode('#pBarcode', record.placa, { format:'CODE128', displayValue:true, height:45, fontSize:12, margin:2 });
+  setTimeout(()=> window.print(), 150);
+}
+
+/* =========================================================================
+   SALIDA · ESCANEO DE CÓDIGO DE BARRAS (LECTOR LÁSER = TECLADO)
+   ========================================================================= */
+const scanInput = document.getElementById('scanInput');
+scanInput.addEventListener('keydown', (e)=>{
+  if(e.key === 'Enter'){
+    e.preventDefault();
+    const value = scanInput.value.trim().toUpperCase();
+    scanInput.value = '';
+    if(value) processExit(value);
+  }
+});
+document.addEventListener('click', (e)=>{
+  if(!document.getElementById('view-salida').classList.contains('hidden') && !e.target.closest('input,button')){
+    scanInput.focus();
+  }
+});
+
+async function processExit(codigo){
+  document.getElementById('statusSalida').className = 'status-line';
+  document.getElementById('statusSalida').textContent = 'Buscando ticket para "' + codigo + '"…';
+
+  const { data: tickets, error } = await sb.from(TABLE)
+    .select('*').eq('placa', codigo).eq('estado','dentro')
+    .order('fecha_entrada', { ascending:false }).limit(1);
+
+  if(error){
+    document.getElementById('statusSalida').className = 'status-line err';
+    document.getElementById('statusSalida').textContent = 'Error de Supabase: ' + error.message;
+    return;
+  }
+  if(!tickets || !tickets.length){
+    document.getElementById('statusSalida').className = 'status-line err';
+    document.getElementById('statusSalida').textContent = '✖ No hay ningún vehículo "dentro" con esa placa/código.';
+    toast('Placa no encontrada o ya registró salida.', 'err');
+    return;
+  }
+
+  const ticket = tickets[0];
+  const nowIso = new Date().toISOString();
+  const { error: errUpd } = await sb.from(TABLE).update({ estado:'afuera', fecha_salida: nowIso }).eq('id', ticket.id);
+  if(errUpd){
+    document.getElementById('statusSalida').className = 'status-line err';
+    document.getElementById('statusSalida').textContent = 'Error actualizando salida: ' + errUpd.message;
+    return;
+  }
+
+  const minutos = Math.max(1, Math.round((new Date(nowIso) - new Date(ticket.fecha_entrada))/60000));
+  document.getElementById('statusSalida').className = 'status-line ok';
+  document.getElementById('statusSalida').textContent = '✔ Salida registrada para ' + ticket.placa;
+  document.getElementById('exitResultBox').innerHTML = `
+    <div class="ticket-preview" style="margin-top:16px;">
+      <h3>SALIDA AUTORIZADA</h3>
+      <div class="plate-big">${ticket.placa}</div>
+      <div class="meta">
+        Tipo: <b>${ticket.tipo_vehiculo.toUpperCase()}</b><br>
+        Entrada: <b>${fmtDate(ticket.fecha_entrada)}</b><br>
+        Salida: <b>${fmtDate(nowIso)}</b><br>
+        Tiempo parqueado: <b>${minutos} min</b>
+      </div>
+    </div>`;
+  toast('Salida registrada: ' + ticket.placa + ' (' + minutos + ' min)', 'ok');
+  setBarrier(true, 'BARRERA · SUBIENDO (SALIDA)');
+  refreshInsideList();
+  scanInput.focus();
+}
+
+async function refreshInsideList(){
+  const box = document.getElementById('insideList');
+  box.innerHTML = '<div class="status-line">Cargando…</div>';
+  const { data, error } = await sb.from(TABLE).select('*').eq('estado','dentro').order('fecha_entrada', {ascending:false});
+  if(error){ box.innerHTML = '<div class="status-line err">Error: '+error.message+'</div>'; return; }
+  if(!data || !data.length){ box.innerHTML = '<div class="status-line">No hay vehículos dentro.</div>'; return; }
+  box.innerHTML = data.map(t => `
+    <div class="list-item">
+      <span>${t.tipo_vehiculo==='moto'?'🏍':'🚗'}</span>
+      <span class="lp">${t.placa}</span>
+      <span class="meta">Entró ${fmtDate(t.fecha_entrada)}<br><span class="pill dentro">DENTRO</span></span>
+    </div>`).join('');
+}
+document.getElementById('btnRefreshInside').addEventListener('click', refreshInsideList);
+
+/* =========================================================================
+   ADMIN · LOGIN + DASHBOARD
+   ========================================================================= */
+document.getElementById('btnAdminLogin').addEventListener('click', tryAdminLogin);
+document.getElementById('adminPass').addEventListener('keydown', e=>{ if(e.key==='Enter') tryAdminLogin(); });
+
+function tryAdminLogin(){
+  const val = document.getElementById('adminPass').value;
+  if(val === ADMIN_PASSWORD){
+    adminAuthed = true;
+    document.getElementById('adminLoginError').textContent = '';
+    document.getElementById('view-admin-login').classList.add('hidden');
+    document.getElementById('view-admin').classList.remove('hidden');
+    loadAdminData();
+  } else {
+    document.getElementById('adminLoginError').textContent = 'Contraseña incorrecta.';
+  }
+}
+document.getElementById('btnLogoutAdmin').addEventListener('click', ()=>{
+  adminAuthed = false;
+  document.getElementById('adminPass').value = '';
+  goTo('admin');
+});
+document.getElementById('btnRefreshAdmin').addEventListener('click', loadAdminData);
+document.getElementById('adminSearch').addEventListener('input', loadAdminData);
+
+async function loadAdminData(){
+  const { data, error } = await sb.from(TABLE).select('*').order('fecha_entrada',{ascending:false});
+  if(error){ toast('Error cargando dashboard: ' + error.message, 'err'); return; }
+  const filterVal = (document.getElementById('adminSearch').value || '').toUpperCase();
+  const filtered = filterVal ? data.filter(t=>t.placa.includes(filterVal)) : data;
+
+  document.getElementById('statTotal').textContent = data.length;
+  document.getElementById('statDentro').textContent = data.filter(t=>t.estado==='dentro').length;
+  document.getElementById('statMotos').textContent = data.filter(t=>t.estado==='dentro' && t.tipo_vehiculo==='moto').length;
+  document.getElementById('statCarros').textContent = data.filter(t=>t.estado==='dentro' && t.tipo_vehiculo==='carro').length;
+
+  fillTable('tableMoto', filtered.filter(t=>t.tipo_vehiculo==='moto'));
+  fillTable('tableCarro', filtered.filter(t=>t.tipo_vehiculo==='carro'));
+}
+
+function fillTable(tableId, rows){
+  const tbody = document.querySelector('#'+tableId+' tbody');
+  if(!rows.length){ tbody.innerHTML = `<tr><td colspan="6" style="color:var(--muted)">Sin registros.</td></tr>`; return; }
+  tbody.innerHTML = rows.map(t=>`
+    <tr>
+      <td class="plate-cell">${t.placa}</td>
+      <td>${t.codigo_barra}</td>
+      <td>${fmtDate(t.fecha_entrada)}</td>
+      <td>${fmtDate(t.fecha_salida)}</td>
+      <td><span class="pill ${t.estado}">${t.estado.toUpperCase()}</span></td>
+      <td>${t.ticket_numero}</td>
+    </tr>`).join('');
+}
+
+/* Init */
+goTo('entrada');
+</script>
+</body>
+</html>
