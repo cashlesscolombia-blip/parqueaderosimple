@@ -380,6 +380,29 @@ const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const ADMIN_PASSWORD = "12";
 
 /* =========================================================================
+   CONFIGURACIÓN DE LA TALANQUERA (relé físico)
+   Deja BARRIER_OPEN_URL vacío ("") para desactivar esta integración.
+   Ejemplos según el relé que uses:
+   - Shelly 1 en la red local:      "http://192.168.1.50/relay/0?turn=on"
+   - Sonoff con Tasmota:            "http://192.168.1.50/cm?cmnd=Power%20TOGGLE"
+   - Mini-servidor local propio:    "http://localhost:3001/abrir-talanquera"
+   Si tu app corre en HTTPS y el relé solo responde por HTTP, el navegador
+   puede bloquear la llamada (mixed content); en ese caso usa un mini-servidor
+   local en localhost como intermediario (ver opción 2 explicada en el chat).
+   ========================================================================= */
+const BARRIER_OPEN_URL = ""; // <-- pon aquí la URL de tu relé
+
+async function openBarrierHardware(motivo){
+  if(!BARRIER_OPEN_URL) return; // integración desactivada, solo se anima la barrera en pantalla
+  try{
+    // 'no-cors' porque la mayoría de relés no devuelven cabeceras CORS; no necesitamos leer la respuesta, solo dispararla
+    await fetch(BARRIER_OPEN_URL, { mode:'no-cors' });
+  }catch(err){
+    toast('No se pudo activar el relé físico de la talanquera: ' + err.message, 'err');
+  }
+}
+
+/* =========================================================================
    UTILIDADES GENERALES
    ========================================================================= */
 function toast(msg, type){
@@ -662,6 +685,7 @@ async function processExit(codigo){
     </div>`;
   toast('Salida registrada: ' + ticket.placa + ' (' + minutos + ' min)', 'ok');
   setBarrier(true, 'BARRERA · SUBIENDO (SALIDA)');
+  openBarrierHardware('salida');
   refreshInsideList();
   scanInput.focus();
 }
